@@ -9,7 +9,11 @@ class Cache:
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
             db=settings.REDIS_DB,
-            decode_responses=True
+            decode_responses=True,
+            socket_connect_timeout=5,  # Connection timeout in seconds
+            socket_timeout=5,  # Read/write timeout in seconds
+            retry_on_timeout=True,  # Retry on timeout
+            max_connections=20  # Maximum connection pool size
         )
     
     def get(self, key: str) -> Optional[dict]:
