@@ -328,10 +328,10 @@ def fetch_pnl_data(user_address: str, force_refresh: bool, db: Session):
         'cached': not should_refresh
     }
     
-@app.get("/")
+@app.get("/", include_in_schema=False)
 def root():
     return {
-        "message": "Polymarket PnL API TEST",
+        "message": "Polymarket PnL API",
         "version": settings.API_VERSION,
         "endpoints": {
             "pnl": "/api/pnl/{user_address}",
