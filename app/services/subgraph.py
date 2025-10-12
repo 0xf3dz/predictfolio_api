@@ -33,7 +33,7 @@ def get_realized_pnl(user_address: str, debug: bool = False) -> Dict:
     seen_ids = set()
     last_id = ""
     iterations = 0
-    max_iterations = 300
+    max_iterations = 50
     
     # Create retry session for all subgraph calls
     session = create_retry_session()
