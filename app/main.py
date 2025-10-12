@@ -1,10 +1,11 @@
-from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi import FastAPI, HTTPException, Query, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import time
 from datetime import datetime, timedelta
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from typing import Optional
 
 from app.config import settings
 from app.models import PnLResponse, ErrorResponse
@@ -12,10 +13,15 @@ from app.db import get_db, engine, Base
 from app.db_models import UserPnL, PnLHistory
 from app.services.subgraph import get_realized_pnl
 from app.services.polymarket import get_unrealized_pnl
+from app.cache import cache
 
 # Timeout configuration
 ENDPOINT_TIMEOUT = 60.0  # 60 seconds total timeout for /api/pnl endpoint
 REFRESH_TIMEOUT = 90.0   # 90 seconds for refresh endpoint (more intensive)
+
+# Rate limiting configuration
+RATE_LIMIT_PER_MINUTE = settings.RATE_LIMIT_PER_MINUTE
+RATE_LIMIT_WINDOW = 60  # 60 seconds window
 
 # Thread pool for running blocking operations
 thread_pool = ThreadPoolExecutor(max_workers=10)
@@ -36,6 +42,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Rate limiting middleware
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Rate limiting middleware using Redis"""
+    
+    # Skip rate limiting for health checks
+    if request.url.path == "/health" or request.url.path == "/":
+        return await call_next(request)
+    
+    # Get client IP
+    client_ip = request.client.host
+    
+    # Create rate limit key
+    current_minute = int(time.time() // 60)
+    rate_limit_key = f"rate_limit:{client_ip}:{current_minute}"
+    
+    try:
+        # Get current count from Redis
+        current_count = cache.redis_client.get(rate_limit_key)
+        current_count = int(current_count) if current_count else 0
+        
+        # Check if rate limit exceeded
+        if current_count >= RATE_LIMIT_PER_MINUTE:
+            return Response(
+                content={
+                    "error": "Rate limit exceeded",
+                    "message": f"Maximum {RATE_LIMIT_PER_MINUTE} requests per minute allowed",
+                    "retry_after": 60 - (int(time.time()) % 60)
+                },
+                status_code=429,
+                media_type="application/json"
+            )
+        
+        # Increment counter
+        cache.redis_client.incr(rate_limit_key)
+        cache.redis_client.expire(rate_limit_key, RATE_LIMIT_WINDOW)
+        
+        # Call next middleware/endpoint
+        response = await call_next(request)
+        
+        # Add rate limit headers
+        response.headers["X-RateLimit-Limit"] = str(RATE_LIMIT_PER_MINUTE)
+        response.headers["X-RateLimit-Remaining"] = str(RATE_LIMIT_PER_MINUTE - current_count - 1)
+        response.headers["X-RateLimit-Reset"] = str((current_minute + 1) * 60)
+        
+        return response
+        
+    except Exception as e:
+        # If Redis fails, allow the request but log the error
+        print(f"Rate limiting error: {e}")
+        return await call_next(request)
+
 # Create database tables on startup
 @app.on_event("startup")
 def startup_event():
@@ -51,6 +109,42 @@ def shutdown_event():
     print("🛑 Shutting down thread pool...")
     thread_pool.shutdown(wait=False)
     print("✅ Thread pool shutdown complete!")
+
+# Rate limiting dependency for user-specific endpoints
+def get_user_rate_limit(
+    request: Request,
+    user_address: str,
+    requests_per_minute: int = RATE_LIMIT_PER_MINUTE
+):
+    """Dependency for user-specific rate limiting"""
+    
+    # Create user-specific rate limit key
+    current_minute = int(time.time() // 60)
+    user_rate_limit_key = f"user_rate_limit:{user_address}:{current_minute}"
+    
+    try:
+        # Get current count from Redis
+        current_count = cache.redis_client.get(user_rate_limit_key)
+        current_count = int(current_count) if current_count else 0
+        
+        # Check if rate limit exceeded
+        if current_count >= requests_per_minute:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "User rate limit exceeded",
+                    "message": f"Maximum {requests_per_minute} requests per minute allowed for this user",
+                    "retry_after": 60 - (int(time.time()) % 60)
+                }
+            )
+        
+        # Increment counter
+        cache.redis_client.incr(user_rate_limit_key)
+        cache.redis_client.expire(user_rate_limit_key, RATE_LIMIT_WINDOW)
+        
+    except Exception as e:
+        # If Redis fails, log but allow the request
+        print(f"User rate limiting error: {e}")
 
 # Helper functions for timeout-protected operations
 async def run_with_timeout(func, *args, timeout=ENDPOINT_TIMEOUT):
@@ -185,6 +279,7 @@ def health():
 
 @app.get("/api/pnl/{user_address}", response_model=PnLResponse)
 async def get_pnl(
+    request: Request,
     user_address: str,
     force_refresh: bool = Query(False, description="Force refresh from subgraph"),
     db: Session = Depends(get_db)
@@ -195,6 +290,10 @@ async def get_pnl(
     - **user_address**: Ethereum address (0x...)
     - **force_refresh**: Force refresh realized PnL from subgraph
     """
+    
+    # Apply user-specific rate limiting
+    get_user_rate_limit(request, user_address)
+    
     try:
         # Run the core logic with timeout protection
         result = await run_with_timeout(
@@ -253,10 +352,15 @@ def refresh_pnl_data(user_address: str, db: Session):
 
 @app.post("/api/pnl/{user_address}/refresh")
 async def refresh_pnl(
+    request: Request,
     user_address: str,
     db: Session = Depends(get_db)
 ):
     """Manually trigger a refresh for this user"""
+    
+    # Apply stricter rate limiting for refresh endpoint (half the normal limit)
+    get_user_rate_limit(request, user_address, requests_per_minute=RATE_LIMIT_PER_MINUTE // 2)
+    
     try:
         # Run refresh with timeout protection
         result = await run_with_timeout(
@@ -279,11 +383,16 @@ async def refresh_pnl(
 
 @app.get("/api/history/{user_address}")
 async def get_history(
+    request: Request,
     user_address: str,
     limit: int = Query(100, description="Number of records to return"),
     db: Session = Depends(get_db)
 ):
     """Get historical PnL snapshots for a user"""
+    
+    # Apply user-specific rate limiting
+    get_user_rate_limit(request, user_address)
+    
     user_address = user_address.lower()
     
     history = db.query(PnLHistory)\
