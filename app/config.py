@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = 300
     
     # Rate Limiting
-    RATE_LIMIT_PER_MINUTE: int = 10
+    RATE_LIMIT_PER_MINUTE: int = 100
     
     class Config:
         env_file = ".env"
