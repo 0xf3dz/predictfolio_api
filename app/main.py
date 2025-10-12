@@ -30,7 +30,23 @@ thread_pool = ThreadPoolExecutor(max_workers=10)
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
-    description="Calculate Polymarket PnL for any user"
+    description="""
+    
+Calculate Polymarket PnL for any user
+    
+## Features
+- **Realized PnL**: Historical profit/loss from closed positions (Goldsky)
+- **Unrealized PnL**: Current profit/loss from open positions (https://data-api.polymarket.com/positions)
+- **Force Refresh**: On-demand data updates from subgraph
+
+## Performance
+- **Redis Caching**: 10-minute cache for unrealized data
+- **Postgres db**: 30-minute refresh for realized data
+
+## Notes
+- Database is updated on-demand during API requests. There are no background jobs
+- API is currently rate limited to 300 requests per minute
+"""
 )
 
 # CORS
