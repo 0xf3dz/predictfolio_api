@@ -24,10 +24,17 @@ def create_retry_session():
 
 def get_unrealized_pnl(user_address: str) -> Dict:
     """
-    Calculate total cash PnL from Polymarket API
+    Calculate total cash PnL from Polymarket API with caching
     """
-    # Import settings here
+    # Import settings and cache here
     from app.config import settings
+    from app.cache import cache
+    
+    # Check cache first
+    cache_key = f"polymarket:{user_address}"
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        return cached_data
     
     url = settings.POLYMARKET_API
     
@@ -64,12 +71,20 @@ def get_unrealized_pnl(user_address: str) -> Dict:
         # Sum all cashPnl
         total_cash_pnl = sum(safe_num(p.get('cashPnl')) for p in positions)
         
-        # FIXED: Return a Dict instead of just a float
-        return {
+        result = {
             'unrealized_pnl': total_cash_pnl,
             'position_count': len(positions)
         }
         
+        # Cache the result for 5 minutes (shorter TTL than subgraph data)
+        cache.set(cache_key, result, ttl=300)
+        
+        return result
+        
     except requests.exceptions.RequestException as e:
         print(f"Polymarket API error: {e}")
-        raise  # FIXED: added error handling
+        # Return empty data if API fails
+        return {
+            'unrealized_pnl': 0,
+            'position_count': 0
+        }
