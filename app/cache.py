@@ -5,16 +5,28 @@ from app.config import settings
 
 class Cache:
     def __init__(self):
-        self.redis_client = redis.Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            db=settings.REDIS_DB,
-            decode_responses=True,
-            socket_connect_timeout=5,  # Connection timeout in seconds
-            socket_timeout=5,  # Read/write timeout in seconds
-            retry_on_timeout=True,  # Retry on timeout
-            max_connections=20  # Maximum connection pool size
-        )
+        # Use REDIS_URL if provided (for Railway/cloud deployments)
+        if settings.REDIS_URL:
+            self.redis_client = redis.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5,
+                retry_on_timeout=True,
+                max_connections=20
+            )
+        else:
+            # Fall back to individual host/port configuration
+            self.redis_client = redis.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB,
+                decode_responses=True,
+                socket_connect_timeout=5,  # Connection timeout in seconds
+                socket_timeout=5,  # Read/write timeout in seconds
+                retry_on_timeout=True,  # Retry on timeout
+                max_connections=20  # Maximum connection pool size
+            )
     
     def get(self, key: str) -> Optional[dict]:
         """Get cached value"""
