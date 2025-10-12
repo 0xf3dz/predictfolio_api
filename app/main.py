@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import time
 from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 
 from app.config import settings
 from app.models import PnLResponse, ErrorResponse
@@ -28,12 +29,16 @@ app.add_middleware(
 )
 
 # Create database tables on startup
-@app.on_event("startup")
-def startup_event():
-    """Create database tables on startup"""
-    print("🚀 Creating database tables...")
-    Base.metadata.create_all(bind=engine)
-    print("✅ Database tables created successfully!")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+  # Startup
+  print("🚀 Creating database tables...")
+  Base.metadata.create_all(bind=engine)
+  print("✅ Database tables created successfully!")
+  yield
+  # Shutdown
+  pass
+
     
 @app.get("/")
 def root():
