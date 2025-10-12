@@ -11,7 +11,6 @@ class PnLResponse(BaseModel):
     unrealized_position_count: int
     realized_last_updated: Optional[str] = None
     cached: bool
-    cache_age_seconds: Optional[int] = None
     
 class ErrorResponse(BaseModel):
     error: str
