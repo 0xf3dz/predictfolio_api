@@ -10,7 +10,7 @@ from typing import Optional
 from app.config import settings
 from app.models import PnLResponse, ErrorResponse
 from app.db import get_db, engine, Base
-from app.db_models import UserPnL, PnLHistory
+from app.db_models import UserPnL
 from app.services.subgraph import get_realized_pnl
 from app.services.polymarket import get_unrealized_pnl
 from app.cache import cache
@@ -317,20 +317,6 @@ def fetch_pnl_data(user_address: str, force_refresh: bool, db: Session):
     # Calculate total
     total_pnl = realized_pnl + unrealized_pnl
     
-    # Save snapshot to history
-    try:
-        history = PnLHistory(
-            user_address=user_address,
-            realized_pnl=realized_pnl,
-            unrealized_pnl=unrealized_pnl,
-            total_pnl=total_pnl
-        )
-        db.add(history)
-        db.commit()
-    except Exception as e:
-        print(f"Error saving to history: {e}")
-        db.rollback()
-    
     return {
         'user_address': user_address,
         'realized_pnl': round(realized_pnl, 2),
@@ -475,37 +461,3 @@ async def refresh_pnl(
             status_code=500, 
             detail="Internal server error during refresh. Please try again later."
         )
-
-@app.get("/api/history/{user_address}")
-async def get_history(
-    request: Request,
-    user_address: str,
-    limit: int = Query(100, description="Number of records to return"),
-    db: Session = Depends(get_db)
-):
-    """Get historical PnL snapshots for a user"""
-    
-    # Apply user-specific rate limiting
-    get_user_rate_limit(request, user_address)
-    
-    user_address = user_address.lower()
-    
-    history = db.query(PnLHistory)\
-        .filter(PnLHistory.user_address == user_address)\
-        .order_by(PnLHistory.timestamp.desc())\
-        .limit(limit)\
-        .all()
-    
-    return {
-        "user_address": user_address,
-        "count": len(history),
-        "history": [
-            {
-                "timestamp": h.timestamp.isoformat(),
-                "realized_pnl": h.realized_pnl,
-                "unrealized_pnl": h.unrealized_pnl,
-                "total_pnl": h.total_pnl
-            }
-            for h in history
-        ]
-    }
