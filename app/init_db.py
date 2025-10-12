@@ -1,5 +1,5 @@
 from app.db import engine, Base
-from app.db_models import UserPnL, PnLHistory
+from app.db_models import UserPnL
 
 def init_db():
     """Create all tables"""
