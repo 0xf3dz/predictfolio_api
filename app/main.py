@@ -110,6 +110,37 @@ def shutdown_event():
     thread_pool.shutdown(wait=False)
     print("✅ Thread pool shutdown complete!")
 
+# Simple circuit breaker for external services
+class CircuitBreaker:
+    def __init__(self, failure_threshold=5, recovery_timeout=60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failures = 0
+        self.last_failure_time = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+    
+    def can_execute(self):
+        if self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "HALF_OPEN"
+                return True
+            return False
+        return True
+    
+    def record_success(self):
+        self.failures = 0
+        self.state = "CLOSED"
+    
+    def record_failure(self):
+        self.failures += 1
+        self.last_failure_time = time.time()
+        if self.failures >= self.failure_threshold:
+            self.state = "OPEN"
+
+# Circuit breaker instances
+subgraph_circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
+polymarket_circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
+
 # Rate limiting dependency for user-specific endpoints
 def get_user_rate_limit(
     request: Request,
@@ -183,11 +214,27 @@ def fetch_pnl_data(user_address: str, force_refresh: bool, db: Session):
     
     if should_refresh:
         print(f"Fetching realized PnL from subgraph for {user_address}...")
+        
+        # Check circuit breaker
+        if not subgraph_circuit_breaker.can_execute():
+            print("⚠️ Subgraph circuit breaker OPEN - using cached data")
+            if user_pnl:
+                # Use cached data if available
+                should_refresh = False
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Subgraph service temporarily unavailable. Please try again later."
+                )
+        
         try:
             # Fetch from subgraph
             realized_data = get_realized_pnl(user_address)
             realized_pnl = realized_data['realized_pnl']
             realized_count = realized_data['position_count']
+            
+            # Record success in circuit breaker
+            subgraph_circuit_breaker.record_success()
             
             # Update or create in database
             if user_pnl:
@@ -211,6 +258,10 @@ def fetch_pnl_data(user_address: str, force_refresh: bool, db: Session):
         except Exception as e:
             db.rollback()
             print(f"Error fetching from subgraph: {e}")
+            
+            # Record failure in circuit breaker
+            subgraph_circuit_breaker.record_failure()
+            
             # If we have old data, use it; otherwise fail
             if user_pnl:
                 print(f"⚠️ Using cached data from database")
@@ -223,15 +274,28 @@ def fetch_pnl_data(user_address: str, force_refresh: bool, db: Session):
     last_updated = user_pnl.last_subgraph_sync
     
     # Always fetch fresh unrealized PnL
-    try:
-        unrealized_data = get_unrealized_pnl(user_address)
-        unrealized_pnl = unrealized_data['unrealized_pnl']
-        unrealized_count = unrealized_data['position_count']
-    except Exception as e:
-        print(f"Error fetching unrealized PnL: {e}")
-        # Graceful degradation - return with 0 unrealized
+    # Check circuit breaker
+    if not polymarket_circuit_breaker.can_execute():
+        print("⚠️ Polymarket API circuit breaker OPEN - using 0 unrealized")
         unrealized_pnl = 0
         unrealized_count = 0
+    else:
+        try:
+            unrealized_data = get_unrealized_pnl(user_address)
+            unrealized_pnl = unrealized_data['unrealized_pnl']
+            unrealized_count = unrealized_data['position_count']
+            
+            # Record success in circuit breaker
+            polymarket_circuit_breaker.record_success()
+        except Exception as e:
+            print(f"Error fetching unrealized PnL: {e}")
+            
+            # Record failure in circuit breaker
+            polymarket_circuit_breaker.record_failure()
+            
+            # Graceful degradation - return with 0 unrealized
+            unrealized_pnl = 0
+            unrealized_count = 0
     
     # Calculate total
     total_pnl = realized_pnl + unrealized_pnl
@@ -322,8 +386,22 @@ def refresh_pnl_data(user_address: str, db: Session):
     if not user_address.startswith('0x') or len(user_address) != 42:
         raise HTTPException(status_code=400, detail="Invalid Ethereum address")
     
+    # Check circuit breaker
+    if not subgraph_circuit_breaker.can_execute():
+        raise HTTPException(
+            status_code=503,
+            detail="Subgraph service temporarily unavailable. Please try again later."
+        )
+    
     # Fetch fresh data
-    realized_data = get_realized_pnl(user_address)
+    try:
+        realized_data = get_realized_pnl(user_address)
+        # Record success in circuit breaker
+        subgraph_circuit_breaker.record_success()
+    except Exception as e:
+        # Record failure in circuit breaker
+        subgraph_circuit_breaker.record_failure()
+        raise e
     
     # Update database
     user_pnl = db.query(UserPnL).filter(UserPnL.user_address == user_address).first()
