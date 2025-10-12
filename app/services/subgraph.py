@@ -36,7 +36,7 @@ def get_realized_pnl(user_address: str, debug: bool = False) -> Dict:
         
         try:
             resp = requests.post(
-                settings.PNL_SUBGRAPH,  # FIXED: was PNL_SUBGRAPH
+                settings.PNL_SUBGRAPH,
                 json={"query": query}, 
                 timeout=30
             )
