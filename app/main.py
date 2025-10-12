@@ -65,12 +65,13 @@ async def rate_limit_middleware(request: Request, call_next):
         
         # Check if rate limit exceeded
         if current_count >= RATE_LIMIT_PER_MINUTE:
+            import json
             return Response(
-                content={
+                content=json.dumps({
                     "error": "Rate limit exceeded",
                     "message": f"Maximum {RATE_LIMIT_PER_MINUTE} requests per minute allowed",
                     "retry_after": 60 - (int(time.time()) % 60)
-                },
+                }),
                 status_code=429,
                 media_type="application/json"
             )
