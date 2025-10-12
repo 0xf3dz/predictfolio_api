@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_URL: str = ""  # For Railway/cloud deployments
-    CACHE_TTL_SECONDS: int = 300
+    CACHE_TTL_SECONDS: int = 600
     
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 100
