@@ -32,7 +32,6 @@ app = FastAPI(
     version=settings.API_VERSION,
     description="Calculate Polymarket PnL for any user"
 )
-Calculate **realized** and **unrealized** PnL for any Polymarket wallet address.
 
 # CORS
 app.add_middleware(
