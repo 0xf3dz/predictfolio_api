@@ -9,7 +9,7 @@ class PnLResponse(BaseModel):
     total_pnl: float
     realized_position_count: int
     unrealized_position_count: int
-    realized_last_updated: Optional[str] = None  # NEW: when realized was last fetched
+    realized_last_updated: Optional[str] = None
     cached: bool
     cache_age_seconds: Optional[int] = None
     
