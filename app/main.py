@@ -57,6 +57,7 @@ def health():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 @app.get("/api/pnl/{user_address}", response_model=PnLResponse)
+@app.get("/api/pnl/{user_address}/", response_model=PnLResponse)
 async def get_pnl(
     user_address: str,
     force_refresh: bool = Query(False, description="Force refresh from subgraph"),
