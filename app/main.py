@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from app.config import settings
 from app.models import PnLResponse, ErrorResponse
-from app.db import get_db
+from app.db import get_db, engine, Base
 from app.db_models import UserPnL, PnLHistory
 from app.services.subgraph import get_realized_pnl
 from app.services.polymarket import get_unrealized_pnl
@@ -27,6 +27,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Create database tables on startup
+@app.on_event("startup")
+def startup_event():
+    """Create database tables on startup"""
+    print("🚀 Creating database tables...")
+    Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created successfully!")
+    
 @app.get("/")
 def root():
     return {
