@@ -1,5 +1,26 @@
 import requests
 from typing import Dict
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+def create_retry_session():
+    """Create a requests session with retry logic"""
+    session = requests.Session()
+    
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=2,  # Maximum number of retries
+        backoff_factor=1,  # Wait 1, 2 seconds between retries
+        status_forcelist=[429, 500, 502, 503, 504],  # Retry on these status codes
+        allowed_methods=["GET"]
+    )
+    
+    # Mount adapter with retry strategy
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    return session
 
 def get_unrealized_pnl(user_address: str) -> Dict:
     """
@@ -8,19 +29,22 @@ def get_unrealized_pnl(user_address: str) -> Dict:
     # Import settings here
     from app.config import settings
     
-    url = settings.POLYMARKET_API  # FIXED: use settings instead of hardcoded
+    url = settings.POLYMARKET_API
     
     querystring = {
         "user": user_address,
-        "sizeThreshold": "1",  # FIXED: uncommented and set to "1" to filter out tiny positions
+        "sizeThreshold": "1",  # Filter out tiny positions
         "limit": "500",
         "sortBy": "TOKENS",
         "sortDirection": "DESC"
     }
     
+    # Create retry session
+    session = create_retry_session()
+    
     try:
-        response = requests.get(url, params=querystring, timeout=10)
-        response.raise_for_status()  # FIXED: added error checking
+        response = session.get(url, params=querystring, timeout=10)
+        response.raise_for_status()
         data = response.json()
         
         # Handle different response formats
