@@ -1,6 +1,27 @@
 import requests
 import time
 from typing import Dict
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+def create_retry_session():
+    """Create a requests session with retry logic"""
+    session = requests.Session()
+    
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=3,  # Maximum number of retries
+        backoff_factor=1,  # Wait 1, 2, 4 seconds between retries
+        status_forcelist=[429, 500, 502, 503, 504],  # Retry on these status codes
+        allowed_methods=["POST", "GET"]
+    )
+    
+    # Mount adapter with retry strategy
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    return session
 
 def get_realized_pnl(user_address: str, debug: bool = False) -> Dict:
     """Calculate total realized PnL with proper error handling"""
@@ -13,6 +34,9 @@ def get_realized_pnl(user_address: str, debug: bool = False) -> Dict:
     last_id = ""
     iterations = 0
     max_iterations = 300
+    
+    # Create retry session for all subgraph calls
+    session = create_retry_session()
     
     while iterations < max_iterations:
         iterations += 1
@@ -35,7 +59,7 @@ def get_realized_pnl(user_address: str, debug: bool = False) -> Dict:
         """ % (user_address.lower(), last_id)
         
         try:
-            resp = requests.post(
+            resp = session.post(
                 settings.PNL_SUBGRAPH,
                 json={"query": query}, 
                 timeout=30
