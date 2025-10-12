@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import time
 from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
+import asyncio
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from app.config import settings
 from app.models import PnLResponse, ErrorResponse
@@ -11,6 +12,13 @@ from app.db import get_db, engine, Base
 from app.db_models import UserPnL, PnLHistory
 from app.services.subgraph import get_realized_pnl
 from app.services.polymarket import get_unrealized_pnl
+
+# Timeout configuration
+ENDPOINT_TIMEOUT = 60.0  # 60 seconds total timeout for /api/pnl endpoint
+REFRESH_TIMEOUT = 90.0   # 90 seconds for refresh endpoint (more intensive)
+
+# Thread pool for running blocking operations
+thread_pool = ThreadPoolExecutor(max_workers=10)
 
 # Initialize FastAPI
 app = FastAPI(
@@ -29,47 +37,39 @@ app.add_middleware(
 )
 
 # Create database tables on startup
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-  # Startup
-  print("🚀 Creating database tables...")
-  Base.metadata.create_all(bind=engine)
-  print("✅ Database tables created successfully!")
-  yield
-  # Shutdown
-  pass
+@app.on_event("startup")
+def startup_event():
+    """Create database tables on startup"""
+    print("🚀 Creating database tables...")
+    Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created successfully!")
 
-    
-@app.get("/")
-def root():
-    return {
-        "message": "Polymarket PnL API",
-        "version": settings.API_VERSION,
-        "endpoints": {
-            "pnl": "/api/pnl/{user_address}",
-            "refresh": "/api/pnl/{user_address}/refresh",
-            "health": "/health"
-        }
-    }
+# Cleanup thread pool on shutdown
+@app.on_event("shutdown")
+def shutdown_event():
+    """Cleanup resources on shutdown"""
+    print("🛑 Shutting down thread pool...")
+    thread_pool.shutdown(wait=False)
+    print("✅ Thread pool shutdown complete!")
 
-@app.get("/health")
-def health():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+# Helper functions for timeout-protected operations
+async def run_with_timeout(func, *args, timeout=ENDPOINT_TIMEOUT):
+    """Run a blocking function with timeout protection"""
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(thread_pool, func, *args),
+            timeout=timeout
+        )
+        return result
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Operation timed out after {timeout} seconds. Please try again later."
+        )
 
-@app.get("/api/pnl/{user_address}", response_model=PnLResponse)
-@app.get("/api/pnl/{user_address}/", response_model=PnLResponse)
-async def get_pnl(
-    user_address: str,
-    force_refresh: bool = Query(False, description="Force refresh from subgraph"),
-    db: Session = Depends(get_db)
-):
-    """
-    Get total PnL for a Polymarket user
-    
-    - **user_address**: Ethereum address (0x...)
-    - **force_refresh**: Force refresh realized PnL from subgraph
-    """
-    
+def fetch_pnl_data(user_address: str, force_refresh: bool, db: Session):
+    """Core PnL data fetching logic (blocking operation)"""
     # Normalize address
     user_address = user_address.lower()
     
@@ -166,6 +166,90 @@ async def get_pnl(
         'realized_last_updated': last_updated.isoformat(),
         'cached': not should_refresh
     }
+    
+@app.get("/")
+def root():
+    return {
+        "message": "Polymarket PnL API",
+        "version": settings.API_VERSION,
+        "endpoints": {
+            "pnl": "/api/pnl/{user_address}",
+            "refresh": "/api/pnl/{user_address}/refresh",
+            "health": "/health"
+        }
+    }
+
+@app.get("/health")
+def health():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+@app.get("/api/pnl/{user_address}", response_model=PnLResponse)
+async def get_pnl(
+    user_address: str,
+    force_refresh: bool = Query(False, description="Force refresh from subgraph"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get total PnL for a Polymarket user
+    
+    - **user_address**: Ethereum address (0x...)
+    - **force_refresh**: Force refresh realized PnL from subgraph
+    """
+    try:
+        # Run the core logic with timeout protection
+        result = await run_with_timeout(
+            fetch_pnl_data, 
+            user_address, 
+            force_refresh, 
+            db,
+            timeout=ENDPOINT_TIMEOUT
+        )
+        return result
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 400, 500, 504)
+        raise
+    except Exception as e:
+        # Catch any unexpected errors
+        print(f"Unexpected error in get_pnl: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Internal server error. Please try again later."
+        )
+
+def refresh_pnl_data(user_address: str, db: Session):
+    """Core refresh logic (blocking operation)"""
+    user_address = user_address.lower()
+    
+    if not user_address.startswith('0x') or len(user_address) != 42:
+        raise HTTPException(status_code=400, detail="Invalid Ethereum address")
+    
+    # Fetch fresh data
+    realized_data = get_realized_pnl(user_address)
+    
+    # Update database
+    user_pnl = db.query(UserPnL).filter(UserPnL.user_address == user_address).first()
+    
+    if user_pnl:
+        user_pnl.realized_pnl = realized_data['realized_pnl']
+        user_pnl.position_count = realized_data['position_count']
+        user_pnl.last_subgraph_sync = datetime.utcnow()
+        user_pnl.updated_at = datetime.utcnow()
+    else:
+        user_pnl = UserPnL(
+            user_address=user_address,
+            realized_pnl=realized_data['realized_pnl'],
+            position_count=realized_data['position_count']
+        )
+        db.add(user_pnl)
+    
+    db.commit()
+    
+    return {
+        "message": "Refreshed successfully",
+        "user_address": user_address,
+        "realized_pnl": realized_data['realized_pnl'],
+        "last_updated": datetime.utcnow().isoformat()
+    }
 
 @app.post("/api/pnl/{user_address}/refresh")
 async def refresh_pnl(
@@ -173,43 +257,25 @@ async def refresh_pnl(
     db: Session = Depends(get_db)
 ):
     """Manually trigger a refresh for this user"""
-    user_address = user_address.lower()
-    
-    if not user_address.startswith('0x') or len(user_address) != 42:
-        raise HTTPException(status_code=400, detail="Invalid Ethereum address")
-    
     try:
-        # Fetch fresh data
-        realized_data = get_realized_pnl(user_address)
-        
-        # Update database
-        user_pnl = db.query(UserPnL).filter(UserPnL.user_address == user_address).first()
-        
-        if user_pnl:
-            user_pnl.realized_pnl = realized_data['realized_pnl']
-            user_pnl.position_count = realized_data['position_count']
-            user_pnl.last_subgraph_sync = datetime.utcnow()
-            user_pnl.updated_at = datetime.utcnow()
-        else:
-            user_pnl = UserPnL(
-                user_address=user_address,
-                realized_pnl=realized_data['realized_pnl'],
-                position_count=realized_data['position_count']
-            )
-            db.add(user_pnl)
-        
-        db.commit()
-        
-        return {
-            "message": "Refreshed successfully",
-            "user_address": user_address,
-            "realized_pnl": realized_data['realized_pnl'],
-            "last_updated": datetime.utcnow().isoformat()
-        }
-        
+        # Run refresh with timeout protection
+        result = await run_with_timeout(
+            refresh_pnl_data,
+            user_address,
+            db,
+            timeout=REFRESH_TIMEOUT
+        )
+        return result
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        # Catch any unexpected errors
+        print(f"Unexpected error in refresh_pnl: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Internal server error during refresh. Please try again later."
+        )
 
 @app.get("/api/history/{user_address}")
 async def get_history(
