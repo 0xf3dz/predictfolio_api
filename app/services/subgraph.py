@@ -69,19 +69,15 @@ def get_realized_pnl(user_address: str, debug: bool = False) -> Dict:
             data = resp.json()
             
             if 'errors' in data:
-                print(f"GraphQL Error at iteration {iterations}: {data['errors']}")
-                break
+                raise RuntimeError(f"Subgraph returned GraphQL errors: {data['errors']}")
             
             positions = data.get('data', {}).get('userPositions', [])
             
-        except requests.exceptions.Timeout:
-            print(f"Timeout at iteration {iterations}, retrying...")
-            time.sleep(2)
-            continue
-            
-        except requests.exceptions.RequestException as e:
-            print(f"Request error at iteration {iterations}: {e}")
-            break
+        except requests.exceptions.Timeout as error:
+            raise RuntimeError("Subgraph request timed out") from error
+
+        except requests.exceptions.RequestException as error:
+            raise RuntimeError("Subgraph request failed") from error
         
         if not positions:
             if debug:
@@ -116,8 +112,8 @@ def get_realized_pnl(user_address: str, debug: bool = False) -> Dict:
         
         time.sleep(0.1)
     
-    if iterations >= max_iterations:
-        print(f"⚠️  WARNING: Hit max iterations ({max_iterations}). May not have all positions!")
+    if iterations >= max_iterations and len(positions) == 1000:
+        raise RuntimeError(f"Subgraph pagination exceeded {max_iterations} pages")
     
     if debug:
         print(f"\n{'='*60}")

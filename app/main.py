@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+import re
 import time
 from datetime import datetime, timedelta
 import asyncio
@@ -21,6 +22,7 @@ REFRESH_TIMEOUT = 90.0   # 90 seconds for refresh endpoint (more intensive)
 
 # Rate limiting configuration
 RATE_LIMIT_PER_MINUTE = settings.RATE_LIMIT_PER_MINUTE
+ETHEREUM_ADDRESS_PATTERN = re.compile(r"0x[a-f0-9]{40}")
 RATE_LIMIT_WINDOW = 60  # 60 seconds window
 
 # Thread pool for running blocking operations
@@ -157,6 +159,12 @@ class CircuitBreaker:
 # Circuit breaker instances
 subgraph_circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
 polymarket_circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
+def normalize_user_address(user_address: str) -> str:
+    normalized_address = user_address.lower()
+    if ETHEREUM_ADDRESS_PATTERN.fullmatch(normalized_address) is None:
+        raise HTTPException(status_code=400, detail="Invalid Ethereum address")
+    return normalized_address
+
 
 # Rate limiting dependency for user-specific endpoints
 def get_user_rate_limit(
@@ -190,6 +198,8 @@ def get_user_rate_limit(
         cache.redis_client.incr(user_rate_limit_key)
         cache.redis_client.expire(user_rate_limit_key, RATE_LIMIT_WINDOW)
         
+    except HTTPException:
+        raise
     except Exception as e:
         # If Redis fails, log but allow the request
         print(f"User rate limiting error: {e}")
@@ -212,12 +222,7 @@ async def run_with_timeout(func, *args, timeout=ENDPOINT_TIMEOUT):
 
 def fetch_pnl_data(user_address: str, force_refresh: bool, db: Session):
     """Core PnL data fetching logic (blocking operation)"""
-    # Normalize address
-    user_address = user_address.lower()
-    
-    # Validate address format
-    if not user_address.startswith('0x') or len(user_address) != 42:
-        raise HTTPException(status_code=400, detail="Invalid Ethereum address")
+    user_address = normalize_user_address(user_address)
     
     # Get or compute realized PnL
     user_pnl = db.query(UserPnL).filter(UserPnL.user_address == user_address).first()
@@ -283,7 +288,7 @@ def fetch_pnl_data(user_address: str, force_refresh: bool, db: Session):
             if user_pnl:
                 print(f"⚠️ Using cached data from database")
             else:
-                raise HTTPException(status_code=500, detail=f"Error fetching PnL: {str(e)}")
+                raise HTTPException(status_code=502, detail="Unable to fetch realized PnL data")
     
     # Get realized PnL from database
     realized_pnl = user_pnl.realized_pnl
@@ -384,10 +389,7 @@ async def get_pnl(
 
 def refresh_pnl_data(user_address: str, db: Session):
     """Core refresh logic (blocking operation)"""
-    user_address = user_address.lower()
-    
-    if not user_address.startswith('0x') or len(user_address) != 42:
-        raise HTTPException(status_code=400, detail="Invalid Ethereum address")
+    user_address = normalize_user_address(user_address)
     
     # Check circuit breaker
     if not subgraph_circuit_breaker.can_execute():

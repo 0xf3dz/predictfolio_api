@@ -81,10 +81,5 @@ def get_unrealized_pnl(user_address: str) -> Dict:
         
         return result
         
-    except requests.exceptions.RequestException as e:
-        print(f"Polymarket API error: {e}")
-        # Return empty data if API fails
-        return {
-            'unrealized_pnl': 0,
-            'position_count': 0
-        }
+    except requests.exceptions.RequestException as error:
+        raise RuntimeError("Polymarket API request failed") from error
