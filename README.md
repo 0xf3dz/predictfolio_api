@@ -1,6 +1,6 @@
-# Predictfolio API
+# Polymarket PNL API
 
-Predictfolio API calculates realized and unrealized profit and loss for a Polymarket address.
+Polymarket PNL API calculates realized and unrealized profit and loss for a Polymarket address.
 
 - Realized profit and loss comes from the Goldsky PnL subgraph.
 - Unrealized profit and loss comes from the Polymarket Data API.
